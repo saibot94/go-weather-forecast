@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -38,6 +39,8 @@ func weatherHandler(w http.ResponseWriter, r *http.Request) {
 	mw := multiWeatherProvider{
 		openWeatherMap{},
 		weatherUnderground{apiKey: "c1dc24acac1e0136"},
+		weatherForecastIO{apiKey: "97f7a0df927e9db3f4782dcd586db617",
+			gApi: googleApi{apiKey: "AIzaSyA51EGGq8bs8Bkk6S64AB1Z5CVsjDlvkMk"}},
 	}
 
 	temp, err := mw.temperature(city)
@@ -100,6 +103,80 @@ func (w weatherUnderground) temperature(city string) (float64, error) {
 	kelvin := d.Observation.Celsius + 273.15
 	log.Printf("WeatherUnderground: %s: %2.f", city, kelvin)
 	return kelvin, nil
+}
+
+type weatherForecastIO struct {
+	apiKey string
+	gApi   googleApi
+}
+
+type googleApi struct {
+	apiKey string
+}
+
+func (g googleApi) getCoordinates(city string) (float64, float64, error) {
+	resp, err := http.Get("https://maps.googleapis.com/maps/api/geocode/json?address=" + city + "&key=" + g.apiKey)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer resp.Body.Close()
+
+	var d struct {
+		Res []struct {
+			Geometry struct {
+				Location struct {
+					Latitude  float64 `json:"lat"`
+					Longitude float64 `json:"lng"`
+				} `json:"location"`
+			} `json:"geometry"`
+		} `json:"results"`
+	}
+
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		return 0, 0, err
+	}
+
+	lat := d.Res[0].Geometry.Location.Latitude
+	lng := d.Res[0].Geometry.Location.Longitude
+
+	log.Printf("googleApi: %s -> %.2f, %.2f",city, lat, lng)
+
+	return lat, lng, nil
+}
+
+func (w weatherForecastIO) temperature(city string) (float64, error) {
+	lat, lng, err := w.gApi.getCoordinates(city)
+	if err != nil {
+		return 0, err
+	}
+
+	request := "https://api.forecast.io/forecast/" + w.apiKey + "/" + FloatToString(lat) + "," + FloatToString(lng)
+	resp, err := http.Get(request)
+	if err != nil {
+		return 0, err
+	}
+
+	var d struct {
+		Currently struct {
+			Fahrenheit float64 `json:"temperature"`
+		} `json:"currently"`
+	}
+
+	defer resp.Body.Close()
+
+	if err := json.NewDecoder(resp.Body).Decode(&d); err != nil {
+		log.Fatal(err)
+		return 0, err
+	}
+
+	kelvin := (d.Currently.Fahrenheit + 459.67) * (5.0 / 9.0)
+	log.Printf("weatherForecastIO: %s: %.2f", city, kelvin)
+	return kelvin, nil
+}
+
+func FloatToString(input_num float64) string {
+	// to convert a float number to a string
+	return strconv.FormatFloat(input_num, 'f', 6, 64)
 }
 
 type multiWeatherProvider []weatherProvider
